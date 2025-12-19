@@ -89,83 +89,85 @@ AUTH_PAYLOAD = {
 }
 
 
+class DataRetrievalError(Exception):
+    """Custom exception for data retrieval errors."""
+    pass
+
+class AuthenticationError(Exception):
+    """Custom exception for authentication errors."""
+    pass
+
 def authenticate_and_retrieve_data():
     """
-    Authenticates with a remote API using a POST request and retrieves data via a subsequent
-    GET request.
+    Authenticates with a remote API using a POST request and retrieves data via a subsequent GET request.
 
-    This function performs a two-step process:
-
-    Step 1: Authentication
-        - Sends a POST request to the authentication endpoint (`login_url`) using `AUTH_PAYLOAD`.
-        - If successful and a valid token is returned, the function logs the token (partially)
-          and proceeds to data retrieval.
-        - If authentication fails (missing token, HTTP error, connection issue, or JSON decoding
-          failure), the function logs the error and returns an empty list.
-
-    Step 2: Data Retrieval
-        - Sends a GET request to `target_url`, including the authentication token in the
-          Authorization header.
-        - If successful, attempts to decode the response as JSON and returns the retrieved data.
-        - In case of JSON decoding failure, logs the raw response text.
-        - Any errors during this step result in logging and returning an empty list.
-
-    Returns:
-        list or dict: The retrieved JSON data from the API, or an empty list if any step fails.
-
-    Notes:
-        - SSL certificate verification is disabled (`verify=False`) for both requests.
-          This is acceptable only for testing or internal use; not recommended for production.
-        - Detailed logging is performed at each step for debugging and auditing.
-        - Errors are handled gracefully, ensuring the function always returns a valid object.
-
+    Raises:
+        AuthenticationError: If authentication fails.
+        DataRetrievalError: If data retrieval fails.
     """
+
+    # Step 1: Authentication (POST request)
     logger.info("--- STEP 1: AUTHENTICATION (POST request) ---")
     try:
-        login_response = requests.post(login_url, json=AUTH_PAYLOAD, verify=False )
-        login_response.raise_for_status()
+        login_response = requests.post(login_url, json=AUTH_PAYLOAD, verify=False)
+        login_response.raise_for_status()  # Will raise an error for non-2xx status codes
+
         auth_data = login_response.json()
-        if 'token' in auth_data:
-            auth_token = auth_data['token']
-            logger.info("Authentication successful. Received token: %s...",{auth_token[:20]})
-        else:
-            logger.error("Authentication failed: 'token' not found in response.")
-            logger.error("Full response: %s",auth_data)
-            return []
+
+        if 'token' not in auth_data:
+            error_message = "Authentication failed: 'token' not found in response."
+            logger.error(error_message)
+            logger.error("Full response: %s", auth_data)
+            raise AuthenticationError(error_message)  # Raise an error
+
+        auth_token = auth_data['token']
+        logger.info("Authentication successful. Received token: %s...", auth_token[:20])
+
     except requests.exceptions.HTTPError as exception:
-        logger.error("HTTP Error during login (Step 1): %s",exception)
-        logger.error("Response content: %s",login_response.text)
-        return []
+        error_message = f"HTTP Error during login (Step 1): {exception}"
+        logger.error(error_message)
+        logger.error("Response content: %s", login_response.text)
+        raise AuthenticationError(error_message)  # Raise an error
+
     except requests.exceptions.RequestException as exception:
-        logger.error("An error occurred during login (Step 1): %s",exception)
-        return []
+        error_message = f"An error occurred during login (Step 1): {exception}"
+        logger.error(error_message)
+        raise AuthenticationError(error_message)  # Raise an error
+
     except json.JSONDecodeError:
-        logger.error(
-                "Failed to decode JSON response from login endpoint. Response: %s",
-                login_response.text
-                )
-        return []
+        error_message = f"Failed to decode JSON response from login endpoint. Response: {login_response.text}"
+        logger.error(error_message)
+        raise AuthenticationError(error_message)  # Raise an error
+
+    # Step 2: Data Retrieval (GET request)
+    logger.info("--- STEP 2: DATA RETRIEVAL (GET request) ---")
     try:
-        headers = {
-            'Authorization': f'Bearer {auth_token}',
-        }
+        headers = {'Authorization': f'Bearer {auth_token}'}
         data_response = requests.get(target_url, headers=headers, verify=False)
-        data_response.raise_for_status()
+        data_response.raise_for_status()  # Will raise an error for non-2xx status codes
+
         logger.info("Data retrieval successful (Status 200 OK).")
         try:
             retrieved_data = data_response.json()
             logger.info("\nRetrieved Data Preview (JSON):")
-            logger.info("%s",json.dumps(retrieved_data, indent=4, ensure_ascii=False))
-            return retrieved_data
+            logger.info("%s", json.dumps(retrieved_data, indent=4, ensure_ascii=False))
+            return retrieved_data  # Only return data if retrieval was successful
         except json.JSONDecodeError:
+            error_message = f"Failed to decode JSON response during data retrieval. Response: {data_response.text}"
             logger.error("\nRetrieved Data Preview (Raw Text):")
-            logger.error("%s",data_response.text)
+            logger.error("%s", data_response.text)
+            raise DataRetrievalError(error_message)  # Raise an error
+
     except requests.exceptions.HTTPError as exception:
-        logger.error("HTTP Error during data retrieval (Step 2): %s",exception)
-        logger.error("Response content: %s",data_response.text)
+        error_message = f"HTTP Error during data retrieval (Step 2): {exception}"
+        logger.error(error_message)
+        logger.error("Response content: %s", data_response.text)
+        raise DataRetrievalError(error_message)  # Raise an error
+
     except requests.exceptions.RequestException as exception:
-        logger.error("An error occurred during data retrieval (Step 2): %s",exception)
-    return []
+        error_message = f"An error occurred during data retrieval (Step 2): {exception}"
+        logger.error(error_message)
+        raise DataRetrievalError(error_message)  # Raise an error
 
 
 def acquire_lock():
@@ -937,14 +939,16 @@ if __name__ == "__main__":
     LOCK_HANDLE = acquire_lock()
     try:
         if not is_out_of_work_hours() and NON_WORKING_HOURS_ONLY:
-            logger.info("Sorry, i am not allowed to run on working hours.")
+            logger.info("Sorry, I am not allowed to run during working hours.")
             sys.exit()
-        #external_data = fetch_json_from_insecure_url(target_url, auth_username, auth_password)
-        external_data = authenticate_and_retrieve_data()
-        external_data = prepend_group_name(external_data)
-        external_data = add_missing_groups(external_data)
-        external_data = add_dummy_host(external_data)
-        domain=Cptapi(
+
+        try:
+            external_data = authenticate_and_retrieve_data()
+            external_data = prepend_group_name(external_data)
+            external_data = add_missing_groups(external_data)
+            external_data = add_dummy_host(external_data)
+
+            domain = Cptapi(
                 user,
                 password,
                 url,
@@ -953,22 +957,36 @@ if __name__ == "__main__":
                 read_only=False,
                 page_size=page_size,
                 publish_wait_time=publish_wait_time
-                )
-        domain.verbose=False
-        if external_data:
-            logger.info('Syncing external source to firewall.')
-            logger.info('External data retrieved %s',json.dumps(external_data, indent=4))
-            sync_external_data_to_firewall(external_data,domain)
-        else:
-            logger.error("\nFailed to fetch JSON data.")
-            logger.error("Please check the URL, credentials, and ensure the server is accessible.")
-        session=domain.show_session()
-        if session['changes'] != 0:
-            domain.publish()
-            domain.reassign_all()
-            domain.reinstall_all_policies()
-        domain.logout()
+            )
+            domain.verbose = False
+
+            if external_data:
+                logger.info('Syncing external source to firewall.')
+                logger.info('External data retrieved %s', json.dumps(external_data, indent=4))
+                sync_external_data_to_firewall(external_data, domain)
+            else:
+                logger.error("\nFailed to fetch JSON data.")
+                logger.error("Please check the URL, credentials, and ensure the server is accessible.")
+
+            session = domain.show_session()
+            if session['changes'] != 0:
+                domain.publish()
+                domain.reassign_all()
+                domain.reinstall_all_policies()
+
+            domain.logout()
+
+        except AuthenticationError as auth_error:
+            logger.error(f"Authentication failed: {auth_error}")
+        except DataRetrievalError as data_error:
+            logger.error(f"Data retrieval failed: {data_error}")
+        except Exception as general_error:
+            logger.error(f"An unexpected error occurred: {general_error}")
+
     finally:
         release_lock()
         if ENABLE_EMAIL_REPORTING:
             send_error_email(error_handler.errors)
+
+
+

@@ -206,6 +206,8 @@ def acquire_lock():
         fcntl.flock(LOCK_HANDLE, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         logger.error("Another instance is already running. Exiting.")
+        if ENABLE_EMAIL_REPORTING:
+            send_error_email(error_handler.errors)        
         sys.exit(1)
     atexit.register(release_lock)
     signal.signal(signal.SIGINT, handle_signal)

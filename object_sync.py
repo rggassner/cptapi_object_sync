@@ -1,3 +1,6 @@
+
+object_sync.py
+100%
 #!/usr/bin/python3
 # -*- coding: utf-8 -*-
 """
@@ -63,11 +66,14 @@ import urllib3
 from urllib3.exceptions import InsecureRequestWarning
 from cptapi import Cptapi
 from my_config import * #pylint: disable=wildcard-import
+import hashlib
+
 
 
 urllib3.disable_warnings(InsecureRequestWarning)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+HASH_CACHE_FILE = "/tmp/object_sync_data.md5"
 LOCK_FILE = "/tmp/object_sync.lock"
 LOCK_HANDLE = None
 
@@ -99,76 +105,76 @@ class AuthenticationError(Exception):
 
 def authenticate_and_retrieve_data():
     """
-    Authenticates with a remote API using a POST request and retrieves data via a subsequent GET request.
-
-    Raises:
-        AuthenticationError: If authentication fails.
-        DataRetrievalError: If data retrieval fails.
+    Authenticates with a remote API, retrieves data, and checks against the previous
+    run's MD5 checksum. Exits early if data is unchanged.
     """
-
     # Step 1: Authentication (POST request)
     logger.info("--- STEP 1: AUTHENTICATION (POST request) ---")
     try:
         login_response = requests.post(login_url, json=AUTH_PAYLOAD, verify=False)
-        login_response.raise_for_status()  # Will raise an error for non-2xx status codes
-
+        login_response.raise_for_status()
         auth_data = login_response.json()
 
         if 'token' not in auth_data:
             error_message = "Authentication failed: 'token' not found in response."
             logger.error(error_message)
-            logger.error("Full response: %s", auth_data)
-            raise AuthenticationError(error_message)  # Raise an error
+            raise AuthenticationError(error_message)
 
         auth_token = auth_data['token']
         logger.info("Authentication successful. Received token: %s...", auth_token[:20])
 
-    except requests.exceptions.HTTPError as exception:
-        error_message = f"HTTP Error during login (Step 1): {exception}"
-        logger.error(error_message)
-        logger.error("Response content: %s", login_response.text)
-        raise AuthenticationError(error_message)  # Raise an error
-
     except requests.exceptions.RequestException as exception:
         error_message = f"An error occurred during login (Step 1): {exception}"
         logger.error(error_message)
-        raise AuthenticationError(error_message)  # Raise an error
-
-    except json.JSONDecodeError:
-        error_message = f"Failed to decode JSON response from login endpoint. Response: {login_response.text}"
-        logger.error(error_message)
-        raise AuthenticationError(error_message)  # Raise an error
+        raise AuthenticationError(error_message)
 
     # Step 2: Data Retrieval (GET request)
     logger.info("--- STEP 2: DATA RETRIEVAL (GET request) ---")
     try:
         headers = {'Authorization': f'Bearer {auth_token}'}
         data_response = requests.get(target_url, headers=headers, verify=False)
-        data_response.raise_for_status()  # Will raise an error for non-2xx status codes
+        data_response.raise_for_status()
 
         logger.info("Data retrieval successful (Status 200 OK).")
+
+        # --- HASH CHECK OPTIMIZATION ---
+        raw_bytes = data_response.content
+        current_md5 = hashlib.md5(raw_bytes).hexdigest()
+
+        # Compare current hash against saved hash on disk
+        if os.path.exists(HASH_CACHE_FILE):
+            try:
+                with open(HASH_CACHE_FILE, "r", encoding="utf-8") as hash_file:
+                    previous_md5 = hash_file.read().strip()
+                
+                if current_md5 == previous_md5:
+                    logger.info("MD5 checksum matches previous run (%s). No external data changes detected.", current_md5)
+                    logger.info("Skipping Firewall authentication and object synchronization.")
+                    # Exit gracefully; atexit will clean up the lock file safely
+                    sys.exit(0)
+            except IOError as io_err:
+                logger.warning("Could not read hash cache file: %s. Proceeding with sync.", io_err)
+
+        # Update cache file with new hash on change
+        try:
+            with open(HASH_CACHE_FILE, "w", encoding="utf-8") as hash_file:
+                hash_file.write(current_md5)
+        except IOError as io_err:
+            logger.error("Failed to update MD5 hash cache file: %s", io_err)
+        # --- END HASH CHECK OPTIMIZATION ---
+
         try:
             retrieved_data = data_response.json()
-            logger.info("\nRetrieved Data Preview (JSON):")
-            logger.info("%s", json.dumps(retrieved_data, indent=4, ensure_ascii=False))
-            return retrieved_data  # Only return data if retrieval was successful
+            return retrieved_data
         except json.JSONDecodeError:
-            error_message = f"Failed to decode JSON response during data retrieval. Response: {data_response.text}"
-            logger.error("\nRetrieved Data Preview (Raw Text):")
-            logger.error("%s", data_response.text)
-            raise DataRetrievalError(error_message)  # Raise an error
-
-    except requests.exceptions.HTTPError as exception:
-        error_message = f"HTTP Error during data retrieval (Step 2): {exception}"
-        logger.error(error_message)
-        logger.error("Response content: %s", data_response.text)
-        raise DataRetrievalError(error_message)  # Raise an error
+            error_message = f"Failed to decode JSON response: {data_response.text}"
+            logger.error(error_message)
+            raise DataRetrievalError(error_message)
 
     except requests.exceptions.RequestException as exception:
         error_message = f"An error occurred during data retrieval (Step 2): {exception}"
         logger.error(error_message)
-        raise DataRetrievalError(error_message)  # Raise an error
-
+        raise DataRetrievalError(error_message)
 
 def acquire_lock():
     """
@@ -207,7 +213,7 @@ def acquire_lock():
     except BlockingIOError:
         logger.error("Another instance is already running. Exiting.")
         if ENABLE_EMAIL_REPORTING:
-            send_error_email(error_handler.errors)        
+            send_error_email(error_handler.errors)
         sys.exit(1)
     atexit.register(release_lock)
     signal.signal(signal.SIGINT, handle_signal)
@@ -991,4 +997,4 @@ if __name__ == "__main__":
             send_error_email(error_handler.errors)
 
 
-
+Displaying object_sync.py.
